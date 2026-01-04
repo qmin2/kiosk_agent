@@ -16,7 +16,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.checkpoint.memory import MemorySaver
 
-from kiosk_agent.src.config import AgentConfig
+from kiosk_agent.src.config import AgentConfig, STTConfig
 from kiosk_agent.src.control.adb import ADBController
 from kiosk_agent.src.control.translator import ActionTranslator
 from kiosk_agent.src.models.base import BaseModelClient, ModelAction
@@ -35,9 +35,9 @@ from kiosk_agent.src.utils.utils import (
     format_thought_history
 )
 from kiosk_agent.src.utils.types import (
-    HistoryEntry, 
-    AgentState, 
-    AgentStepResult, 
+    HistoryEntry,
+    AgentState,
+    AgentStepResult,
     AgentStreamEvent
 )
 
@@ -54,6 +54,8 @@ class LangGraphKioskAgent:
         self.graph = None
         # Initialize checkpointer for saving state
         self.checkpointer = MemorySaver()
+        # STT config
+        self.stt_config = config.stt
         
 
         provider = config.model.provider
@@ -72,6 +74,38 @@ class LangGraphKioskAgent:
         self.analysis_client = model_client
         self.screenshotter = AndroidScreenshotter(config.screenshot)
         self.graph = None
+
+    def _get_stt_input(self) -> tuple[Optional[str], str]:
+        """Get user input via STT based on config settings.
+
+        Returns:
+            Tuple of (transcribed_text, input_source)
+        """
+        from kiosk_agent.src.stt import transcribe_from_file, transcribe_from_microphone, transcribe_streaming
+
+        stt_config = self.stt_config
+
+        if stt_config.mode == "file" and stt_config.file_path:
+            input_source = f"stt_file ({stt_config.file_path})"
+            text = transcribe_from_file(
+                stt_config.file_path,
+                language_code=stt_config.language_code
+            )
+        elif stt_config.mode == "streaming":
+            input_source = "stt_streaming"
+            text = transcribe_streaming(
+                language_code=stt_config.language_code,
+                sample_rate_hz=stt_config.sample_rate_hz
+            )
+        else:  # microphone
+            input_source = f"stt_microphone ({stt_config.timeout_seconds}s)"
+            text = transcribe_from_microphone(
+                language_code=stt_config.language_code,
+                sample_rate_hz=stt_config.sample_rate_hz,
+                timeout_seconds=stt_config.timeout_seconds
+            )
+
+        return text, input_source
 
     def _capture_screen(self) -> ScreenshotResult:
         """Capture the current kiosk screen and cache it for future use."""
@@ -212,6 +246,7 @@ class LangGraphKioskAgent:
 
     def _build_graph(self) -> CompiledStateGraph:
         builder = StateGraph(AgentState)
+        builder.add_node("stt_input", self._stt_input_node)
         builder.add_node("vlm", self._vlm_node)
         builder.add_node("execute", self._execute_node)
         builder.add_node("state_router", self._state_router_node)
@@ -219,7 +254,19 @@ class LangGraphKioskAgent:
         builder.add_node("analyze", self._analyze_node)
         builder.add_node("backtrack", self._backtrack_node)
 
-        builder.set_entry_point("vlm")
+        # Entry point depends on STT configuration
+        if self.stt_config.enabled:
+            builder.set_entry_point("stt_input")
+            builder.add_conditional_edges(
+                "stt_input",
+                self._route_from_stt,
+                {
+                    "vlm": "vlm",
+                    "end": END,
+                },
+            )
+        else:
+            builder.set_entry_point("vlm")
         builder.add_edge("vlm", "execute")
         builder.add_edge("execute", "state_router")
         builder.add_conditional_edges(
@@ -261,6 +308,59 @@ class LangGraphKioskAgent:
             },
         )
         return builder.compile(checkpointer=self.checkpointer)
+
+    def _stt_input_node(self, state: AgentState) -> AgentState:
+        """Get instruction via STT if enabled and no instruction provided."""
+        instruction = state.get("instruction")
+        instruction_source = state.get("instruction_source", "text")
+
+        # If STT is enabled and no instruction yet, get it via STT
+        if self.stt_config.enabled and not instruction:
+            print("\n[STT] 음성 입력을 기다리는 중...")
+            text, source = self._get_stt_input()
+
+            if text:
+                print(f"\n{'='*60}")
+                print(f"[INPUT] 입력 방식: {source}")
+                print(f"[INPUT] 인식된 명령: {text}")
+                print(f"{'='*60}\n")
+                return {
+                    "instruction": text,
+                    "instruction_source": source,
+                    "status": "instruction_received",
+                    "route": "vlm",
+                }
+            else:
+                print("[STT] 음성이 감지되지 않았습니다.")
+                return {
+                    "status": "no_instruction",
+                    "route": "end",
+                }
+
+        # Instruction already provided (text input)
+        if instruction:
+            print(f"\n{'='*60}")
+            print(f"[INPUT] 입력 방식: {instruction_source}")
+            print(f"[INPUT] 명령: {instruction}")
+            print(f"{'='*60}\n")
+            return {
+                "status": "instruction_received",
+                "route": "vlm",
+            }
+
+        # No instruction and STT not enabled
+        print("[ERROR] instruction이 필요합니다.")
+        return {
+            "status": "no_instruction",
+            "route": "end",
+        }
+
+    def _route_from_stt(self, state: AgentState) -> Literal["vlm", "end"]:
+        """Route based on STT input result."""
+        route = state.get("route", "end")
+        if route == "vlm":
+            return "vlm"
+        return "end"
 
     def _vlm_node(self, state: AgentState) -> AgentState:
         screenshot = self._get_screen()
@@ -403,8 +503,53 @@ class LangGraphKioskAgent:
         }
 
     def _human_review_node(self, state: AgentState) -> AgentState:
+        """Handle human review / INTERRUPT action.
+
+        If STT is enabled, prompts user for voice input.
+        Otherwise, checks for human_decision in state.
+        """
+        # Get interrupt info from payload if available
+        payload = state.get("payload", {})
+        interrupt_info = payload.get("interrupt", {})
+        question = interrupt_info.get("question", "추가 입력이 필요합니다. 말씀해 주세요.")
+        reason = interrupt_info.get("reason", "HUMAN_INPUT_REQUIRED")
+
+        # If STT is enabled, get voice input
+        if self.stt_config.enabled:
+            print(f"\n{'='*60}")
+            print(f"[INTERRUPT] 이유: {reason}")
+            print(f"[INTERRUPT] 질문: {question}")
+            print(f"{'='*60}")
+            print("[STT] 음성 입력을 기다리는 중...")
+
+            text, _ = self._get_stt_input()
+
+            if text:
+                print(f"[STT] 사용자 응답: {text}")
+                # Update instruction with user's response and continue
+                current_instruction = state.get("instruction", "")
+                updated_instruction = f"{current_instruction} (사용자 추가 입력: {text})"
+                return {
+                    "instruction": updated_instruction,
+                    "human_decision": text,
+                    "route": "loop",
+                    "requires_human_input": False,
+                    "status": "human_feedback_applied",
+                }
+            else:
+                print("[STT] 음성이 감지되지 않았습니다. 다시 시도해 주세요.")
+                return {
+                    "status": "waiting_human",
+                    "route": "wait",
+                    "requires_human_input": True,
+                }
+
+        # Fallback: check for human_decision in state (non-STT mode)
         decision = (state.get("human_decision") or "").lower()
         if not decision:
+            print(f"\n[INTERRUPT] 이유: {reason}")
+            print(f"[INTERRUPT] 질문: {question}")
+            print("[WAITING] human_decision 입력을 기다리는 중...")
             return {
                 "status": "waiting_human",
                 "route": "wait",

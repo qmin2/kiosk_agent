@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from kiosk_agent.src.config import ADBConfig, AgentConfig, ModelConfig, ScreenshotConfig
+from kiosk_agent.src.config import ADBConfig, AgentConfig, ModelConfig, ScreenshotConfig, STTConfig
 from kiosk_agent.src.langgraph_kiosk_agent import KioskAgent
 
 
@@ -46,40 +46,34 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
-    # Get instruction from STT (file or microphone) or command line
-    instruction = args.instruction
-    input_source = "text"  # default: command line text input
+    # Determine STT mode
+    # --use-stt: STT 활성화 (필수)
+    # --stt-file: 있으면 파일 모드, 없으면 마이크 모드
+    # --stt-streaming: 마이크 모드일 때 스트리밍 사용
+    stt_enabled = args.use_stt
 
     if args.stt_file:
-        from kiosk_agent.src.stt import transcribe_from_file
+        stt_mode = "file"
+    elif args.stt_streaming:
+        stt_mode = "streaming"
+    else:
+        stt_mode = "microphone"
 
-        input_source = f"file ({args.stt_file})"
-        instruction = transcribe_from_file(args.stt_file)
-        if not instruction:
-            print("[ERROR] 음성이 감지되지 않았습니다. 다시 시도해 주세요.")
-            return
-    elif args.use_stt:
-        from kiosk_agent.src.stt import transcribe_from_microphone, transcribe_streaming
+    # Build STT config
+    stt_config = STTConfig(
+        enabled=stt_enabled,
+        mode=stt_mode,
+        file_path=args.stt_file,
+        timeout_seconds=args.stt_timeout,
+    )
 
-        if args.stt_streaming:
-            input_source = "microphone (streaming)"
-            instruction = transcribe_streaming()
-        else:
-            input_source = f"microphone ({args.stt_timeout}s)"
-            instruction = transcribe_from_microphone(timeout_seconds=args.stt_timeout)
+    # Get instruction from command line (STT will be handled in the graph if enabled)
+    instruction = args.instruction
 
-        if not instruction:
-            print("[ERROR] 음성이 감지되지 않았습니다. 다시 시도해 주세요.")
-            return
-
-    if not instruction:
+    # If STT is not enabled, instruction is required
+    if not stt_enabled and not instruction:
         print("[ERROR] instruction이 필요합니다. 텍스트로 입력하거나 --use-stt 옵션을 사용하세요.")
         return
-
-    print(f"\n{'='*60}")
-    print(f"[INPUT] 입력 방식: {input_source}")
-    print(f"[INPUT] 인식된 명령: {instruction}")
-    print(f"{'='*60}\n")
 
     screenshot_config = ScreenshotConfig(
         adb_path=args.adb_path,
@@ -106,11 +100,12 @@ def main() -> None:
         screenshot=screenshot_config,
         model=model_config,
         adb=adb_config,
+        stt=stt_config,
         schema_path=Path(args.schema_path),
     )
-    
+
     agent = KioskAgent(config)
-    result = agent.forward(args.instruction)
+    result = agent.forward(instruction)
     # print("Status:", result.status)
     # print("Thought:", result.thought)
     # # print("ADB commands:")

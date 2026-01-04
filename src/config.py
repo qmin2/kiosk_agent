@@ -38,6 +38,17 @@ class ModelConfig:
 
 
 @dataclass
+class STTConfig:
+    """Configuration for Speech-to-Text input."""
+    enabled: bool = False
+    mode: Literal["file", "microphone", "streaming"] = "microphone"
+    file_path: Optional[str] = None
+    language_code: str = "ko-KR"
+    sample_rate_hz: int = 16000
+    timeout_seconds: float = 10.0
+
+
+@dataclass
 class ADBConfig:
     """Configuration for translating structured actions into concrete adb commands."""
     adb_path: str = "adb"
@@ -53,4 +64,5 @@ class AgentConfig:
     screenshot: ScreenshotConfig = field(default_factory=ScreenshotConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     adb: ADBConfig = field(default_factory=ADBConfig)
+    stt: STTConfig = field(default_factory=STTConfig)
     schema_path: Path = Path("./utils/deprecated_schema/schema_showui.json")

@@ -21,6 +21,7 @@ class HistoryEntry(TypedDict, total=False):
 
 class AgentState(TypedDict, total=False):
     instruction: str
+    instruction_source: Optional[str]  # "text", "stt_file", "stt_microphone", "stt_streaming"
     iteration: int
     model_action: Optional[ModelAction]
     raw_response: Optional[str]
