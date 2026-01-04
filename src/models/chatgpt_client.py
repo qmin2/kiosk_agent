@@ -40,33 +40,36 @@ class ChatGPTClient(BaseModelClient):
 
     def generate(self, instruction: str, image: Image.Image) -> str:
         encoded_image = self._encode_image(image)
-        response = self._client.responses.parse( # responses.parse( ~~~ )
+
+        # Use standard chat.completions API for OpenRouter compatibility
+        response = self._client.chat.completions.create(
             model=self.config.openai_model,
-            input=[
+            messages=[
                 {
-                    "role": "system", "content": self.config.system_prompt
+                    "role": "system",
+                    "content": self.config.system_prompt
                 },
                 {
                     "role": "user",
                     "content": [
                         {
-                            "type":"input_text",
+                            "type": "text",
                             "text": instruction
                         },
                         {
-                            "type": "input_image",
-                            "image_url": f"data:image/png;base64,{encoded_image}", 
-                                           # detail option: low, high
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{encoded_image}",
+                            }
                         },
                     ],
                 },
             ],
-            # previous_response_id = "" # multi-turn 유지하면 도움이 될려나
-            text_format = GUI_OUTPUT
+            response_format={"type": "json_object"},
         )
-        print(response.output_text)
-        return response.output_text
-        # return self._parse_completion(response.output_text)
+        result = response.choices[0].message.content
+        print(result)
+        return result
 
     # Function to encode the image
     def encode_image(self, image_path): # from https://platform.openai.com/docs/guides/images-vision?api-mode=responses&format=base64-encoded

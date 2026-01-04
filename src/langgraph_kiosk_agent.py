@@ -97,28 +97,31 @@ class LangGraphKioskAgent:
         # Prepare graph and initial state
         graph, initial_state = self.prepare_workflow(instruction, previous_state)
         
-        # Set up configuration with thread_id if provided
-        config = {"recursion_limit": 100}
+        # Set up configuration with thread_id (required for checkpointer)
+        import uuid
+        config = {
+            "recursion_limit": 100,
+            "configurable": {"thread_id": thread_id or str(uuid.uuid4())}
+        }
+
+        # If we have a thread_id, we might be resuming.
+        # If no previous_state is explicitly provided, we rely on the checkpointer.
+        # However, invoke(initial_state) will overwrite if initial_state is not None.
+        # If we want to resume, we should pass None as input state OR handle it carefully.
+        # But here initial_state is always constructed.
+        # LangGraph behavior: passing input state updates the state.
+
+        # Strategy: If thread_id is used, we assume we might be resuming.
+        # But if it's a NEW thread, we need initial state.
+        # We can check if state exists for this thread.
         if thread_id:
-            config["configurable"] = {"thread_id": thread_id}
-            
-            # If we have a thread_id, we might be resuming. 
-            # If no previous_state is explicitly provided, we rely on the checkpointer.
-            # However, invoke(initial_state) will overwrite if initial_state is not None. 
-            # If we want to resume, we should pass None as input state OR handle it carefully.
-            # But here initial_state is always constructed. 
-            # LangGraph behavior: passing input state updates the state. 
-            
-            # Strategy: If thread_id is used, we assume we might be resuming.
-            # But if it's a NEW thread, we need initial state.
-            # We can check if state exists for this thread.
             checkpoint = self.checkpointer.get(config)
             if checkpoint:
-                # Resume: pass None or update dict? 
+                # Resume: pass None or update dict?
                 # passing None to invoke usually means "continue from last state"
                 # But initial_state has 'instruction' etc.
                 # If we want to resume we should probably only update new inputs if any.
-                # For simplicity here, we pass initial_state to UPDATE the state, 
+                # For simplicity here, we pass initial_state to UPDATE the state,
                 # but careful not to overwrite history if not intended.
                 # Actually, simply calling invoke with state will MERGE/UPDATE.
                 pass
@@ -489,29 +492,43 @@ class LangGraphKioskAgent:
         history = state.get("history") or []
         last_step = history[-1] if history else None
         progress = bool(last_step and last_step.get("progress"))
-        
+
+        # Check if last action was SWIPE/SCROLL - be more lenient with progress check
+        last_action = state.get("payload", {}).get("action", "").upper()
+        is_scroll_action = last_action in {"SWIPE", "SCROLL"}
+
         if self._should_request_human_input(history, status):
             return "human"
-        
+
         if status in {"needs_analysis", "analyze"}:
             return "analyze"
-            
+
         if status == "backtracking":
             return "backtrack"
-            
+
+        # For SWIPE/SCROLL actions, continue looping even without significant progress
+        if is_scroll_action and iteration < self.max_iterations:
+            print(f"[DEBUG] Route: loop (SWIPE/SCROLL action, iteration={iteration})")
+            return "loop"
+
         if not progress:
             # If no progress for N steps, analyze (which might trigger backtrack)
+            print(f"[DEBUG] Route: analyze (no progress, iteration={iteration})")
             return "analyze"
-            
+
         if status in {"retry", "continue", "needs_retry"} and iteration < self.max_iterations:
+            print(f"[DEBUG] Route: loop (status={status}, iteration={iteration})")
             return "loop"
-            
+
         if iteration >= self.max_iterations:
+            print(f"[DEBUG] Route: analyze (max_iterations reached, iteration={iteration})")
             return "analyze"
-            
+
         if status in {"completed", "success", "analyzed"}:
+            print(f"[DEBUG] Route: end (status={status})")
             return "end"
-            
+
+        print(f"[DEBUG] Route: end (fallback, status={status}, iteration={iteration}, progress={progress})")
         return "end"
 
 

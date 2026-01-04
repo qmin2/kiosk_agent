@@ -3,7 +3,7 @@ from kiosk_agent.src.utils.types import AgentState, AgentStepResult
 from kiosk_agent.src.prompts.prompts import ANALYSIS_PROMPT_TEMPLATE
 import json
 
-from typing import Literal, Optional
+from typing import Literal, Optional, Dict, Any, List
 from pathlib import Path
 from PIL import Image, ImageChops, ImageStat
 
