@@ -2,8 +2,7 @@ from kiosk_agent.src.models.base import BaseModelClient, ModelAction
 from kiosk_agent.src.utils.types import AgentState, AgentStepResult
 from kiosk_agent.src.prompts.prompts import ANALYSIS_PROMPT_TEMPLATE
 import json
-
-from typing import Literal, Optional
+from typing import Dict, List, Literal, Optional, Any
 from pathlib import Path
 from PIL import Image, ImageChops, ImageStat
 
@@ -60,8 +59,12 @@ def compute_screen_id(image_path: Optional[Path]) -> Optional[str]:
 
 def build_analysis_prompt(state: AgentState) -> str:
     payload = state.get("payload") or {}
-    adb_commands = state.get("adb_commands", [])
-    commands_text = "\n".join(" ".join(cmd) for cmd in adb_commands) or "(no commands executed)"
+    history = state.get("history", [])
+    all_adb_commands = []
+    for entry in history:
+        all_adb_commands.extend(entry.get("adb_commands", []))
+    
+    commands_text = "\n".join(" ".join(cmd) for cmd in all_adb_commands) or "(no commands executed)"
     app_structure = state.get("application_structure") or "Not yet defined."
     thought_history = "\n".join(state.get("thought_history") or []) or "No previous thoughts."
     
@@ -80,7 +83,11 @@ def build_analysis_prompt(state: AgentState) -> str:
     
 def build_result(state: AgentState) -> AgentStepResult:
     payload = state.get("payload") or {}
-    history = state.get("history") or []
+    history = state.get("history", [])
+    all_adb_commands = []
+    for entry in history:
+        all_adb_commands.extend(entry.get("adb_commands", []))
+        
     last_screenshot = state.get("post_action_path")
     if history:
         last_entry = history[-1]
@@ -90,7 +97,7 @@ def build_result(state: AgentState) -> AgentStepResult:
         raw_response=state.get("raw_response") or "",
         thought=state.get("thought"),
         payload=payload,
-        adb_commands=state.get("adb_commands", []),
+        adb_commands=all_adb_commands,
         status=state.get("status", "unknown"),
         analysis=state.get("analysis"),
         history=history,

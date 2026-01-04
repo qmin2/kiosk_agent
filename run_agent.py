@@ -56,7 +56,7 @@ def main() -> None:
     )
     
     agent = KioskAgent(config)
-    result = agent.forward(args.instruction)
+    result = agent.forward(args.instruction, thread_id="test_thread")
     # print("Status:", result.status)
     # print("Thought:", result.thought)
     # # print("ADB commands:")

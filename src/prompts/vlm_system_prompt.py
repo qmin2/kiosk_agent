@@ -47,10 +47,6 @@ VLM_GEMINI_SYSTEM_PROMPT = """
 """
 
 VLM_GEMINI_USER_PROMPT = """
-<application_structure>
-{application_structure}
-</application_structure>
-
 <context>
 {thought_history}
 </context>

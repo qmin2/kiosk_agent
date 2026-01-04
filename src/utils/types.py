@@ -11,7 +11,7 @@ class HistoryEntry(TypedDict, total=False):
     iteration: int
     payload: Dict[str, Any]
     thought: Optional[str]
-    adb_commands: List[Sequence[str]]
+    adb_commands: List # ['adb', 'shell', 'input', 'touchscreen', 'tap', '538', '2233']
     status: str
     pre_action_path: Optional[Path]
     post_action_path: Optional[Path]
@@ -26,22 +26,21 @@ class AgentState(TypedDict, total=False):
     raw_response: Optional[str]
     payload: Dict[str, Any]
     thought: Optional[str]
-    adb_commands: List[Sequence[str]]
+    # adb_commands: List[Sequence[str]]
+    
     status: str
     route: Literal["loop", "analyze", "human", "end", "backtrack"]
     pre_action_path: Optional[Path]
     post_action_path: Optional[Path]
     analysis: Optional[str]
     history: List[HistoryEntry]
-    requires_human_input: bool
-    human_decision: Optional[str]
     difference: Optional[float]
     progress: Optional[bool]
-    last_adb_commands: List[Sequence[str]]
+    last_adb_commands: List
     
     # Advanced backtracking & structure tracking
-    application_structure: str # Textual description of discovered UI map (formatted tree)
-    ui_nodes: Dict[str, Any]    # screen_id -> { description: str, children: { action_desc: screen_id } }
+    # application_structure: str # Textual description of discovered UI map (formatted tree)
+    # ui_nodes: Dict[str, Any]    # screen_id -> { description: str, children: { action_desc: screen_id } }
     thought_tree: Dict[int, Any] # iteration_id -> { thought: str, parent: int, screen_id: str, action: str }
     thought_history: List[str] # Sequential history for prompting
     backtrack_target_index: Optional[int] # Index in history to return to
@@ -64,4 +63,3 @@ class AgentStreamEvent:
     stage: str
     state: AgentState
     message: str
-    requires_human_input: bool = False

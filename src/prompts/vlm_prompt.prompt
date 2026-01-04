@@ -1,2 +1,0 @@
-DEFAULT_SYSTEM_PROMPT = """Based on the screenshot of the page, I give a text description and you give its corresponding location. 
-The coordinate represents a clickable location [x, y] for an element, which is a relative coordinate on the screenshot, scaled from 0 to 1."""

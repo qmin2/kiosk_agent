@@ -11,10 +11,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from PIL import Image, ImageChops, ImageStat
+from PIL import Image
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
-from langgraph.checkpoint.memory import MemorySaver
+# from langgraph.checkpoint.memory import MemorySaver
 
 from kiosk_agent.src.config import AgentConfig
 from kiosk_agent.src.control.adb import ADBController
@@ -52,10 +52,8 @@ class LangGraphKioskAgent:
         self.progress_threshold = 0.02
         self.human_review_trigger = 2  # number of consecutive non-progress steps before escalations
         self.graph = None
-        # Initialize checkpointer for saving state
-        self.checkpointer = MemorySaver()
+        # self.checkpointer = MemorySaver()
         
-
         provider = config.model.provider
 
         if provider == "chatgpt":
@@ -97,31 +95,10 @@ class LangGraphKioskAgent:
         # Prepare graph and initial state
         graph, initial_state = self.prepare_workflow(instruction, previous_state)
         
-        # Set up configuration with thread_id if provided
+        # Set up configuration
         config = {"recursion_limit": 100}
         if thread_id:
             config["configurable"] = {"thread_id": thread_id}
-            
-            # If we have a thread_id, we might be resuming. 
-            # If no previous_state is explicitly provided, we rely on the checkpointer.
-            # However, invoke(initial_state) will overwrite if initial_state is not None. 
-            # If we want to resume, we should pass None as input state OR handle it carefully.
-            # But here initial_state is always constructed. 
-            # LangGraph behavior: passing input state updates the state. 
-            
-            # Strategy: If thread_id is used, we assume we might be resuming.
-            # But if it's a NEW thread, we need initial state.
-            # We can check if state exists for this thread.
-            checkpoint = self.checkpointer.get(config)
-            if checkpoint:
-                # Resume: pass None or update dict? 
-                # passing None to invoke usually means "continue from last state"
-                # But initial_state has 'instruction' etc.
-                # If we want to resume we should probably only update new inputs if any.
-                # For simplicity here, we pass initial_state to UPDATE the state, 
-                # but careful not to overwrite history if not intended.
-                # Actually, simply calling invoke with state will MERGE/UPDATE.
-                pass
 
         final_state = graph.invoke(initial_state, config)
         return build_result(final_state)
@@ -135,11 +112,9 @@ class LangGraphKioskAgent:
         initial_state: AgentState = {
             "instruction": instruction,
             "iteration": 0,
-            "adb_commands": [],
             "status": "init",
             "route": "loop",
             "history": [],
-            "requires_human_input": False,
             "human_decision": None,
             "difference": None,
             "progress": None,
@@ -214,7 +189,7 @@ class LangGraphKioskAgent:
         builder.add_node("state_router", self._state_router_node)
         builder.add_node("human_review", self._human_review_node)
         builder.add_node("analyze", self._analyze_node)
-        builder.add_node("backtrack", self._backtrack_node)
+        # builder.add_node("backtrack", self._backtrack_node)
 
         builder.set_entry_point("vlm")
         builder.add_edge("vlm", "execute")
@@ -226,7 +201,7 @@ class LangGraphKioskAgent:
                 "loop": "vlm",
                 "analyze": "analyze",
                 "human": "human_review",
-                "backtrack": "backtrack",
+                # "backtrack": "backtrack",
                 "end": END,
             },
         )
@@ -235,43 +210,45 @@ class LangGraphKioskAgent:
             self._route_from_state,
             {
                 "loop": "vlm",
-                "backtrack": "backtrack",
+                # "backtrack": "backtrack",
                 "end": END,
             },
         )
-        builder.add_conditional_edges(
-            "backtrack",
-            self._route_from_state,
-            {
-                "loop": "vlm",
-                "backtrack": "backtrack", # Continue backtracking if not reached
-                "end": END,
-            },
-        )
+        # builder.add_conditional_edges(
+        #     "backtrack",
+        #     self._route_from_state,
+        #     {
+        #         "loop": "vlm",
+        #         # "backtrack": "backtrack", # Continue backtracking if not reached
+        #         "end": END,
+        #     },
+        # )
         builder.add_conditional_edges(
             "human_review",
             self._route_from_human_node,
             {
                 "resume": "vlm",
                 "abort": END,
-                "wait": END,
             },
         )
-        return builder.compile(checkpointer=self.checkpointer)
+        return builder.compile()
 
     def _vlm_node(self, state: AgentState) -> AgentState:
         screenshot = self._get_screen()
         
         # Build contextual instruction
         from kiosk_agent.src.prompts.vlm_system_prompt import VLM_GEMINI_USER_PROMPT
-        app_structure = state.get("application_structure") or "Discovered menu items and screens will be listed here."
+        # Extract thought history from the history list
+        history = state.get("history", [])
+        thought_history_items = []
+        for entry in history:
+            it = entry.get("iteration")
+            thought = entry.get("thought")
+            if thought:
+                thought_history_items.append(f"Step {it}: {thought}")
         
-        # Flatten tree to sequential history for LLM
-        current_path_history = format_thought_history(state.get("thought_tree", {}), state.get("iteration", 0))
-        thought_history_text = "\n".join(current_path_history) or "Initial step."
-        
+        thought_history_text = "\n".join(thought_history_items) or "Initial step."
         full_instruction = VLM_GEMINI_USER_PROMPT.format(
-            application_structure=app_structure,
             thought_history=thought_history_text,
             user_instruction=state["instruction"]
         )
@@ -297,16 +274,13 @@ class LangGraphKioskAgent:
         pre_screen = self._get_screen()
         adb_result = self.translator.execute(model_action.payload, img_size=pre_screen.image.size)
         post_screen = self._capture_screen()
-        accumulated_commands = list(state.get("adb_commands", [])) + adb_result.commands
         return {
-            "adb_commands": accumulated_commands,
             "status": adb_result.status,
             "post_action_path": post_screen.path,
             "last_adb_commands": adb_result.commands,
         }
 
     def _state_router_node(self, state: AgentState) -> AgentState:
-        
         post_screen_path = state.get("post_action_path")
         new_screen_id = compute_screen_id(post_screen_path)
         old_screen_id = state.get("current_screen_id")
@@ -315,109 +289,88 @@ class LangGraphKioskAgent:
             state.get("pre_action_path"), post_screen_path
         )
         
-        # Progress check
         progress = bool(difference is not None and difference >= self.progress_threshold)
-        
-        # Check if it was just a scroll
         is_scroll = state.get("payload", {}).get("action") in {"SWIPE", "SCROLL"}
         screen_changed = new_screen_id != old_screen_id
         
-        # Update Thought Tree and Structure
-        thought_tree = dict(state.get("thought_tree", {}))
+        new_thought_tree = dict(state.get("thought_tree", {}))
         last_id = state.get("last_iteration_id", -1)
         current_iter = state.get("iteration", 0)
         thought = state.get("thought")
         
         if thought:
-            thought_tree[current_iter] = {
+            new_thought_tree[current_iter] = {
                 "thought": thought,
                 "parent": last_id,
-                "screen_id": old_screen_id  # Thought happened at the pre-action screen
+                "screen_id": old_screen_id
             }
         
-        # Sequentially formatted history for current logs and AgentState tracking
-        thought_history = format_thought_history(thought_tree, current_iter)
+        new_thought_history = format_thought_history(new_thought_tree, current_iter)
         
-        # Update Tree Structure
-        ui_nodes = dict(state.get("ui_nodes", {}))
-        if old_screen_id and new_screen_id and screen_changed and not is_scroll and progress:
-            # Add edge to the tree
-            action_desc = f"{state.get('payload', {}).get('action')} at {state.get('payload', {}).get('box_2d')}"
-            
-            # Ensure old node exists
-            if old_screen_id not in ui_nodes:
-                ui_nodes[old_screen_id] = {"children": {}}
-                
-            # Update parent
-            ui_nodes[old_screen_id]["children"][action_desc] = new_screen_id
-            
-            # Initialize new node
-            if new_screen_id not in ui_nodes:
-                ui_nodes[new_screen_id] = {"children": {}}
-
-        # Format the tree for the prompt
-        root_id = list(ui_nodes.keys())[0] if ui_nodes else new_screen_id
-        formatted_structure = format_ui_tree(ui_nodes, root_id) if root_id else ""
-
-        history = list(state.get("history", []))
-        history.append(
-            {
-                "iteration": state.get("iteration", 0),
-                "payload": state.get("payload", {}),
-                "thought": state.get("thought"),
-                "adb_commands": state.get("last_adb_commands", []),
-                "status": state.get("status", "unknown"),
-                "pre_action_path": state.get("pre_action_path"),
-                "post_action_path": state.get("post_action_path"),
-                "difference": difference,
-                "progress": progress,
-                "screen_id": new_screen_id,
-            }
-        )
-
-        enriched_state = dict(state)
-        enriched_state["history"] = history
-        enriched_state["difference"] = difference
-        enriched_state["progress"] = progress
-        enriched_state["status"] = "continue" if progress else "no_progress"
-        enriched_state["current_screen_id"] = new_screen_id or old_screen_id
-        
-        route = self._determine_route(enriched_state)
-
-        return {
-            "route": route,
-            "history": history,
+        new_history_entry = {
+            "iteration": current_iter,
+            "payload": state.get("payload", {}),
+            "thought": state.get("thought"),
+            "adb_commands": state.get("last_adb_commands", []),
+            "status": state.get("status", "unknown"),
+            "pre_action_path": state.get("pre_action_path"),
+            "post_action_path": post_screen_path,
             "difference": difference,
             "progress": progress,
-            "thought_history": thought_history,
-            "ui_nodes": ui_nodes,
-            "thought_tree": thought_tree,
-            "application_structure": formatted_structure,
+            "screen_id": new_screen_id,
+        }
+        new_history = list(state.get("history", [])) + [new_history_entry]
+
+        temp_state = {
+            "status": "continue" if progress else "no_progress",
+            "iteration": current_iter,
+            "history": new_history,
+        }
+        route = self._determine_route(temp_state)
+
+        # Return only the changed indices
+        return {
+            "route": route,
+            "history": new_history,
+            "difference": difference,
+            "progress": progress,
+            "thought_history": new_thought_history,
+            "thought_tree": new_thought_tree,
             "current_screen_id": new_screen_id or old_screen_id,
             "last_iteration_id": current_iter,
-            "requires_human_input": route == "human",
-            "status": "waiting_human" if route == "human" else enriched_state["status"]
+            "status": "waiting_human" if route == "human" else temp_state["status"]
         }
 
     def _human_review_node(self, state: AgentState) -> AgentState:
-        decision = (state.get("human_decision") or "").lower()
-        if not decision:
-            return {
-                "status": "waiting_human",
-                "route": "wait",
-                "requires_human_input": True,
-            }
+        print("\n" + "="*50)
+        print(" HUMAN REVIEW REQUIRED ")
+        print("="*50)
+        print(f"Iteration: {state.get('iteration', 0)}")
+        print(f"Status: {state.get('status')}")
+        print(f"Instruction: {state.get('instruction')}")
+        
+        # Display thought history to give context
+        thought_history = state.get("thought_history", [])
+        if thought_history:
+            print("\nRecent Thoughts:")
+            for thought in thought_history[-3:]:
+                print(f" - {thought}")
+        
+        print("\nThe agent seems to be stuck or requires guidance.")
+        decision = input("Enter 'resume' to continue, or anything else to abort: ").strip().lower()
+        
         if decision == "resume":
+            print(">>> Resuming agent execution...")
             return {
                 "route": "loop",
-                "requires_human_input": False,
                 "status": "human_feedback_applied",
             }
-        return {
-            "route": "abort",
-            "requires_human_input": False,
-            "status": "aborted",
-        }
+        else:
+            print(">>> Aborting agent execution...")
+            return {
+                "route": "abort",
+                "status": "aborted",
+            }
 
     def _analyze_node(self, state: AgentState) -> AgentState:
         prompt = build_analysis_prompt(state)
@@ -442,46 +395,43 @@ class LangGraphKioskAgent:
             "status": status,
         }
 
-    def _backtrack_node(self, state: AgentState) -> AgentState:
-        """Perform physical BACK actions to recover. Uses targeted replay if possible."""
-        target_idx = state.get("backtrack_target_index")
-        history = state.get("history") or []
-        current_iter = state.get("iteration", 0)
+    # def _backtrack_node(self, state: AgentState) -> AgentState:
+    #     """Perform physical BACK actions to recover. Uses targeted replay if possible."""
+    #     target_idx = state.get("backtrack_target_index")
+    #     current_iter = state.get("iteration", 0)
         
-        thought_history = list(state.get("thought_history", []))
+    #     new_thought_history = list(state.get("thought_history", []))
         
-        if target_idx is not None and target_idx < current_iter:
-            num_backs = current_iter - target_idx
-            print(f"Backtracking: Targeted index {target_idx} found. Executing {num_backs} BACK(s).")
-            thought_history.append(f"System: Targeted backtrack to iteration {target_idx}. Executing {num_backs} BACKs.")
-            for _ in range(num_backs):
-                self.translator.execute({"action": "BACK"}, img_size=(1080, 1920))
-        else:
-            print("Backtracking: No specific target. Executing single ADB BACK.")
-            thought_history.append("System: Performed single BACK to recover (Fallback).")
-            self.translator.execute({"action": "BACK"}, img_size=(1080, 1920))
+    #     if target_idx is not None and target_idx < current_iter:
+    #         num_backs = current_iter - target_idx
+    #         print(f"Backtracking: Targeted index {target_idx} found. Executing {num_backs} BACK(s).")
+    #         new_thought_history.append(f"System: Targeted backtrack to iteration {target_idx}. Executing {num_backs} BACKs.")
+    #         for _ in range(num_backs):
+    #             self.translator.execute({"action": "BACK"}, img_size=(1080, 1920))
+    #     else:
+    #         print("Backtracking: No specific target. Executing single ADB BACK.")
+    #         new_thought_history.append("System: Performed single BACK to recover (Fallback).")
+    #         self.translator.execute({"action": "BACK"}, img_size=(1080, 1920))
             
-        post_screen = self._capture_screen()
-        new_screen_id = compute_screen_id(post_screen.path)
+    #     post_screen = self._capture_screen()
+    #     new_screen_id = compute_screen_id(post_screen.path)
         
-        return {
-            "status": "backtracked",
-            "route": "loop",
-            "thought_history": thought_history,
-            "current_screen_id": new_screen_id,
-            "last_iteration_id": target_idx if target_idx is not None else state.get("last_iteration_id", -1),
-            "backtrack_target_index": None # Reset
-        }
+    #     return {
+    #         "status": "backtracked",
+    #         "route": "loop",
+    #         "thought_history": new_thought_history,
+    #         "current_screen_id": new_screen_id,
+    #         "last_iteration_id": target_idx if target_idx is not None else state.get("last_iteration_id", -1),
+    #         "backtrack_target_index": None
+    #     }
 
     def _route_from_state(self, state: AgentState) -> Literal["loop", "analyze", "human", "end", "backtrack"]:
         return state.get("route", "end")
 
-    def _route_from_human_node(self, state: AgentState) -> Literal["resume", "abort", "wait"]:
+    def _route_from_human_node(self, state: AgentState) -> Literal["resume", "abort"]:
         if state.get("route") == "abort" or state.get("status") == "aborted":
             return "abort"
-        if state.get("route") == "loop" or state.get("status") == "human_feedback_applied":
-            return "resume"
-        return "wait"
+        return "resume"
 
     def _determine_route(self, state: AgentState) -> Literal["loop", "analyze", "human", "end", "backtrack"]:
         status = (state.get("status") or "").lower()
@@ -496,8 +446,8 @@ class LangGraphKioskAgent:
         if status in {"needs_analysis", "analyze"}:
             return "analyze"
             
-        if status == "backtracking":
-            return "backtrack"
+        # if status == "backtracking":
+        #     return "backtrack"
             
         if not progress:
             # If no progress for N steps, analyze (which might trigger backtrack)

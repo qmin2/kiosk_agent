@@ -57,11 +57,14 @@ class ActionTranslator:
                 )
             )
         elif action == "SWIPE":
-            start = self._extract_point(payload, img_size)
-            end_hint = payload.get("end_position") or payload.get("target") or payload
-            end = self._extract_point(end_hint, img_size)
-            duration = payload.get("duration_ms", self.config.default_swipe_duration_ms)
-            commands.append(self.controller.swipe(start[0], start[1], end[0], end[1], duration_ms=duration))
+            width, height = img_size
+            # temporary
+            x_center = 500
+            y_start = 1000
+            y_end = 500
+            duration = "100"
+            commands.append(self.controller.swipe(x_center, y_start, x_center, y_end, duration_ms=duration))
+
         elif action == "INPUT":
             value = payload.get("value")
             if not value:

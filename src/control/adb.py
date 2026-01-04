@@ -25,10 +25,8 @@ class ADBController:
         # tap(=click) (y,x) position.
         return self._run(["shell", "input", "touchscreen", "tap", str(x), str(y)])
 
-    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int | None = None) -> Sequence[str]:
-        cmd = ["shell", "input", "swipe", str(x1), str(y1), str(x2), str(y2)]
-        if duration_ms is not None:
-            cmd.append(str(duration_ms))
+    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms=100) -> Sequence[str]:
+        cmd = ["shell", "input", "swipe", str(x1), str(y1), str(x2), str(y2), str(duration_ms)]
         return self._run(cmd)
 
     def press(self, key: str) -> Sequence[str]:
