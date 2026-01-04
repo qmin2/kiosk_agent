@@ -17,7 +17,11 @@ from kiosk_agent.src.langgraph_kiosk_agent import KioskAgent
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the kiosk GUI agent for a single step.")
-    parser.add_argument("instruction", help="User request the agent should fulfil.")
+    parser.add_argument("instruction", nargs="?", default=None, help="User request the agent should fulfil.")
+    parser.add_argument("--use-stt", action="store_true", help="Use Google STT to get instruction from microphone.")
+    parser.add_argument("--stt-file", type=str, default=None, help="Path to WAV file for STT (instead of microphone).")
+    parser.add_argument("--stt-timeout", type=float, default=10.0, help="STT recording timeout in seconds.")
+    parser.add_argument("--stt-streaming", action="store_true", help="Use streaming STT (stops on final result).")
     parser.add_argument("--provider", choices=["chatgpt", "gemini", "local_vllm"], default="gemini")
     parser.add_argument("--device-id", default=None, help="adb device serial if multiple devices are connected.")
     parser.add_argument("--adb-path", default="adb")
@@ -41,6 +45,42 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+
+    # Get instruction from STT (file or microphone) or command line
+    instruction = args.instruction
+    input_source = "text"  # default: command line text input
+
+    if args.stt_file:
+        from kiosk_agent.src.stt import transcribe_from_file
+
+        input_source = f"file ({args.stt_file})"
+        instruction = transcribe_from_file(args.stt_file)
+        if not instruction:
+            print("[ERROR] 음성이 감지되지 않았습니다. 다시 시도해 주세요.")
+            return
+    elif args.use_stt:
+        from kiosk_agent.src.stt import transcribe_from_microphone, transcribe_streaming
+
+        if args.stt_streaming:
+            input_source = "microphone (streaming)"
+            instruction = transcribe_streaming()
+        else:
+            input_source = f"microphone ({args.stt_timeout}s)"
+            instruction = transcribe_from_microphone(timeout_seconds=args.stt_timeout)
+
+        if not instruction:
+            print("[ERROR] 음성이 감지되지 않았습니다. 다시 시도해 주세요.")
+            return
+
+    if not instruction:
+        print("[ERROR] instruction이 필요합니다. 텍스트로 입력하거나 --use-stt 옵션을 사용하세요.")
+        return
+
+    print(f"\n{'='*60}")
+    print(f"[INPUT] 입력 방식: {input_source}")
+    print(f"[INPUT] 인식된 명령: {instruction}")
+    print(f"{'='*60}\n")
+
     screenshot_config = ScreenshotConfig(
         adb_path=args.adb_path,
         device_id=args.device_id,

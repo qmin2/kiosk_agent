@@ -4,3 +4,4 @@ screenshots
 screenshot
 
 .env
+gen-*.json
