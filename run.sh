@@ -1,0 +1,12 @@
+python run_agent.py "빅맥 세트이고 구성은 후렌치 후라이 미디엄, 콜라 미디엄으로 주문하기위해 장바구니에 담아줘" \
+    --provider gemini \
+    --adb-path adb \
+    --screenshot-dir ./screenshot \
+    --screenshot-abs-path ./screenshot \
+    --schema-path src/utils/schema/schema_showui.json \
+    --keep-last-n 10 \
+    --swipe-duration-ms 300 \
+    --openai-model gpt-4o-mini \
+    --gemini-model gemini-3-flash-preview \
+    --vllm-base-url http://localhost:8000 \
+    --vllm-model-name AgentCPM-GUI

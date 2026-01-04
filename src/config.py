@@ -12,7 +12,7 @@ class ScreenshotConfig: ## 이게 굳이 있어야 하나?
 
     adb_path: str = "adb"
     device_id: Optional[str] = None
-    output_dir: Path = field(default_factory=lambda: Path("/Users/qmin2/Desktop/kiosk_agent/screenshots"))
+    output_dir: Path = field(default_factory=lambda: Path("./screenshots"))
     keep_last_n: int = 10
 
 
@@ -38,13 +38,24 @@ class ModelConfig:
 
 
 @dataclass
+class STTConfig:
+    """Configuration for Speech-to-Text input."""
+    enabled: bool = False
+    mode: Literal["file", "microphone", "streaming"] = "microphone"
+    file_path: Optional[str] = None
+    language_code: str = "ko-KR"
+    sample_rate_hz: int = 16000
+    timeout_seconds: float = 10.0
+
+
+@dataclass
 class ADBConfig:
     """Configuration for translating structured actions into concrete adb commands."""
     adb_path: str = "adb"
     device_id: Optional[str] = None
     default_swipe_duration_ms: int = 300
     steps: int = 1
-    screenshot_abs_path = "/Users/qmin2/Desktop/kiosk_agent/screenshots"
+    screenshot_abs_path: str = "./screenshots"
 
 
 @dataclass
@@ -53,4 +64,5 @@ class AgentConfig:
     screenshot: ScreenshotConfig = field(default_factory=ScreenshotConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     adb: ADBConfig = field(default_factory=ADBConfig)
-    schema_path: Path = Path("/Users/qmin2/02_Pseudo_Lab/kiosk_agent/src/utils/schema/schema_showui.json")
+    stt: STTConfig = field(default_factory=STTConfig)
+    schema_path: Path = Path("./utils/deprecated_schema/schema_showui.json")

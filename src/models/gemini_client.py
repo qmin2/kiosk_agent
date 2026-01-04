@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 
 from kiosk_agent.src.config import ModelConfig
 from kiosk_agent.src.models.base import BaseModelClient
-from kiosk_agent.src.prompts.vlm_system_prompt import VLM_GEMINI_SYSTEM_PROMPTs
+from kiosk_agent.src.prompts.vlm_system_prompt import VLM_GEMINI_SYSTEM_PROMPT
 from kiosk_agent.src.utils.schema import GUI_OUTPUT, InterruptInfo
 
 class GeminiClient(BaseModelClient):
