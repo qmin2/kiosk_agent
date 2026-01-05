@@ -39,10 +39,6 @@ class AgentState(TypedDict, total=False):
     last_adb_commands: List
     
     # Advanced backtracking & structure tracking
-    # application_structure: str # Textual description of discovered UI map (formatted tree)
-    # ui_nodes: Dict[str, Any]    # screen_id -> { description: str, children: { action_desc: screen_id } }
-    thought_tree: Dict[int, Any] # iteration_id -> { thought: str, parent: int, screen_id: str, action: str }
-    thought_history: List[str] # Sequential history for prompting
     backtrack_target_index: Optional[int] # Index in history to return to
     last_iteration_id: int # The 'parent' iteration for the current step
     current_screen_id: Optional[str]

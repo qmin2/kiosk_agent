@@ -24,15 +24,14 @@ from kiosk_agent.src.models.chatgpt_client import ChatGPTClient
 from kiosk_agent.src.models.gemini_client import GeminiClient
 from kiosk_agent.src.models.local_vllm_client import LocalVLLMClient
 from kiosk_agent.src.perception.screenshot import AndroidScreenshotter, ScreenshotResult
-from kiosk_agent.src.prompts.prompts import ANALYSIS_PROMPT_TEMPLATE
+from kiosk_agent.src.prompts.vlm_system_prompt import VLM_GEMINI_USER_PROMPT
+        
 from kiosk_agent.src.utils.utils import (
     parse_analysis_response, 
     compute_difference_from_paths,
     build_analysis_prompt,
     build_result,
     compute_screen_id,
-    format_ui_tree,
-    format_thought_history
 )
 from kiosk_agent.src.utils.types import (
     HistoryEntry, 
@@ -113,24 +112,17 @@ class LangGraphKioskAgent:
             "instruction": instruction,
             "iteration": 0,
             "status": "init",
-            "route": "loop",
+            "route": "vlm",
             "history": [],
             "human_decision": None,
             "difference": None,
             "progress": None,
             "last_adb_commands": [],
-            "application_structure": "",
-            "ui_nodes": {},
-            "thought_tree": {},
-            "thought_history": [],
             "last_iteration_id": -1,
             "current_screen_id": None,
         }
         screen_id = compute_screen_id(self.current_screen_path)
         initial_state["current_screen_id"] = screen_id
-        if screen_id:
-            initial_state["ui_nodes"] = {screen_id: {"children": {}}}
-            initial_state["application_structure"] = f"[Screen: {screen_id[:8]}]"
         return initial_state
 
     def prepare_workflow(
@@ -236,141 +228,110 @@ class LangGraphKioskAgent:
     def _vlm_node(self, state: AgentState) -> AgentState:
         screenshot = self._get_screen()
         
-        # Build contextual instruction
-        from kiosk_agent.src.prompts.vlm_system_prompt import VLM_GEMINI_USER_PROMPT
-        # Extract thought history from the history list
-        history = state.get("history", [])
-        thought_history_items = []
-        for entry in history:
-            it = entry.get("iteration")
-            thought = entry.get("thought")
-            if thought:
-                thought_history_items.append(f"Step {it}: {thought}")
-        
-        thought_history_text = "\n".join(thought_history_items) or "Initial step."
+        thought_history_text = self._get_thought_history(state.get("history", []))
         full_instruction = VLM_GEMINI_USER_PROMPT.format(
             thought_history=thought_history_text,
             user_instruction=state["instruction"]
         )
-
+        
         model_action = self.model_client.propose_action(full_instruction, screenshot.image)
         payload = model_action.payload
-        iteration = state.get("iteration", 0) + 1
         
         return {
             "model_action": model_action,
-            "raw_response": model_action.raw_text,
             "payload": payload,
             "thought": payload.get("thought"),
-            "status": "action_proposed",
+            "status": "thinking",
             "pre_action_path": screenshot.path,
-            "iteration": iteration,
+            "iteration": state.get("iteration", 0) + 1,
         }
 
     def _execute_node(self, state: AgentState) -> AgentState:
         model_action = state.get("model_action")
         if model_action is None:
             raise RuntimeError("execute node received no model action")
+            
         pre_screen = self._get_screen()
         adb_result = self.translator.execute(model_action.payload, img_size=pre_screen.image.size)
         post_screen = self._capture_screen()
+        
         return {
-            "status": adb_result.status,
+            "status": "executed", # Factual: ADB command was sent
             "post_action_path": post_screen.path,
             "last_adb_commands": adb_result.commands,
         }
 
     def _state_router_node(self, state: AgentState) -> AgentState:
+        """Observe results, update history, and determine next route."""
         post_screen_path = state.get("post_action_path")
+        pre_screen_path = state.get("pre_action_path")
+        
         new_screen_id = compute_screen_id(post_screen_path)
-        old_screen_id = state.get("current_screen_id")
         
-        difference = compute_difference_from_paths(
-            state.get("pre_action_path"), post_screen_path
-        )
+        # 1. Update Fact: Difference & Progress
+        diff = compute_difference_from_paths(pre_screen_path, post_screen_path)
+        progress = bool(diff is not None and diff >= self.progress_threshold)
         
-        progress = bool(difference is not None and difference >= self.progress_threshold)
-        is_scroll = state.get("payload", {}).get("action") in {"SWIPE", "SCROLL"}
-        screen_changed = new_screen_id != old_screen_id
-        
-        new_thought_tree = dict(state.get("thought_tree", {}))
-        last_id = state.get("last_iteration_id", -1)
-        current_iter = state.get("iteration", 0)
-        thought = state.get("thought")
-        
-        if thought:
-            new_thought_tree[current_iter] = {
-                "thought": thought,
-                "parent": last_id,
-                "screen_id": old_screen_id
-            }
-        
-        new_thought_history = format_thought_history(new_thought_tree, current_iter)
-        
-        new_history_entry = {
-            "iteration": current_iter,
+        # 2. Update History
+        iteration = state.get("iteration", 0)
+        new_entry = {
+            "iteration": iteration,
             "payload": state.get("payload", {}),
             "thought": state.get("thought"),
             "adb_commands": state.get("last_adb_commands", []),
-            "status": state.get("status", "unknown"),
-            "pre_action_path": state.get("pre_action_path"),
-            "post_action_path": post_screen_path,
-            "difference": difference,
             "progress": progress,
             "screen_id": new_screen_id,
         }
-        new_history = list(state.get("history", [])) + [new_history_entry]
+        history = list(state.get("history", [])) + [new_entry]
+        
+        # 3. Final factual status of this step
+        status = "progress_made" if progress else "stagnant"
+        if state.get("payload", {}).get("action") == "FINISH":
+            status = "task_complete"
+        elif state.get("payload", {}).get("interrupt"):
+            status = "needs_human"
 
-        temp_state = {
-            "status": "continue" if progress else "no_progress",
-            "iteration": current_iter,
-            "history": new_history,
-        }
+        # 4. Delegate Route Decision
+        temp_state = cast(AgentState, {**state, "status": status, "history": history})
         route = self._determine_route(temp_state)
 
-        # Return only the changed indices
         return {
+            "history": history,
+            "status": status,
             "route": route,
-            "history": new_history,
-            "difference": difference,
             "progress": progress,
-            "thought_history": new_thought_history,
-            "thought_tree": new_thought_tree,
-            "current_screen_id": new_screen_id or old_screen_id,
-            "last_iteration_id": current_iter,
-            "status": "waiting_human" if route == "human" else temp_state["status"]
+            "difference": diff,
+            "current_screen_id": new_screen_id or state.get("current_screen_id"),
+            "last_iteration_id": iteration
         }
 
     def _human_review_node(self, state: AgentState) -> AgentState:
         print("\n" + "="*50)
-        print(" HUMAN REVIEW REQUIRED ")
+        print(" HUMAN ASSISTANCE REQUIRED ")
         print("="*50)
-        print(f"Iteration: {state.get('iteration', 0)}")
-        print(f"Status: {state.get('status')}")
-        print(f"Instruction: {state.get('instruction')}")
+        breakpoint()
+        payload = state.get("payload", {})
+        last_thought = payload.get("interrupt").get("question", "에이전트가 정보를 더 필요로 합니다.")
+        print(f"Agent: {last_thought}")
         
-        # Display thought history to give context
-        thought_history = state.get("thought_history", [])
-        if thought_history:
-            print("\nRecent Thoughts:")
-            for thought in thought_history[-3:]:
-                print(f" - {thought}")
+        user_input = input("\n질문에 대해 답변을 해주세요, 처음부터 다시하기를 원하시면 finish를 입력하세요: ").strip()
         
-        print("\nThe agent seems to be stuck or requires guidance.")
-        decision = input("Enter 'resume' to continue, or anything else to abort: ").strip().lower()
-        
-        if decision == "resume":
-            print(">>> Resuming agent execution...")
-            return {
-                "route": "loop",
-                "status": "human_feedback_applied",
-            }
-        else:
-            print(">>> Aborting agent execution...")
+        if user_input.lower() == "finish":
+            print(">>> 사용자의 요청으로 작업을 종료합니다.")
             return {
                 "route": "abort",
                 "status": "aborted",
             }
+        
+        # Update instruction by combining old instruction + agent's question + user's response
+        combined_instruction = f"{state['instruction']}\n[추가 정보 Context]: {last_thought} -> {user_input}"
+        
+        print("\n>>> 정보를 업데이트했습니다. 다시 추론을 시작합니다...")
+        return {
+            "instruction": combined_instruction,
+            "route": "loop",
+            "status": "human_feedback_applied",
+        }
 
     def _analyze_node(self, state: AgentState) -> AgentState:
         prompt = build_analysis_prompt(state)
@@ -433,52 +394,40 @@ class LangGraphKioskAgent:
             return "abort"
         return "resume"
 
-    def _determine_route(self, state: AgentState) -> Literal["loop", "analyze", "human", "end", "backtrack"]:
-        status = (state.get("status") or "").lower()
-        iteration = state.get("iteration", 0)
-        history = state.get("history") or []
-        last_step = history[-1] if history else None
-        progress = bool(last_step and last_step.get("progress"))
-        
-        if self._should_request_human_input(history, status):
-            return "human"
-        
-        if status in {"needs_analysis", "analyze"}:
-            return "analyze"
-            
-        # if status == "backtracking":
-        #     return "backtrack"
-            
-        if not progress:
-            # If no progress for N steps, analyze (which might trigger backtrack)
-            return "analyze"
-            
-        if status in {"retry", "continue", "needs_retry"} and iteration < self.max_iterations:
-            return "loop"
-            
-        if iteration >= self.max_iterations:
-            return "analyze"
-            
-        if status in {"completed", "success", "analyzed"}:
-            return "end"
-            
-        return "end"
+    def _get_thought_history(self, history: List[HistoryEntry]) -> str:
+        """Derive thought history text from the history list."""
+        items = []
+        for entry in history:
+            thought = entry.get("thought")
+            if thought:
+                items.append(f"Step {entry.get('iteration')}: {thought}")
+        return "\n".join(items) or "Initial step."
 
+    def _determine_route(self, state: AgentState) -> Literal["loop", "analyze", "human", "end"]:
+        """Priority-based routing logic."""
+        status = state.get("status", "")
+        iteration = state.get("iteration", 0)
+        history = state.get("history", [])
+
+        # 1. End Condition
+        if status in ["task_complete", "aborted"]:
+            return "end"
+
+        # 2. Human escalation: Explicit request or repeated stagnation
+        stagnant_steps = sum(1 for h in history[-self.human_review_trigger:] if not h.get("progress", False))
+        if status == "needs_human" or stagnant_steps >= self.human_review_trigger:
+            return "human"
+
+        # 3. Analysis: No progress or Max iterations reached
+        if status == "stagnant" or iteration >= self.max_iterations:
+            return "analyze"
+
+        # 4. Default: Continue loop
+        return "loop"
 
     def _invoke_analysis_model(self, prompt: str, image: Optional[Image.Image]) -> str:
         raw = self.analysis_client.generate(prompt, image)
         return self.model_client._coerce_raw_text(raw)
-
-    def _should_request_human_input(self, history: List[HistoryEntry], status: str) -> bool:
-        status = status.lower()
-        if status in {"needs_human", "awaiting_human", "waiting_human"}:
-            return True
-        if not history:
-            return False
-        latest_window = history[-self.human_review_trigger :]
-        if len(latest_window) < self.human_review_trigger:
-            return False
-        return all(not entry.get("progress") for entry in latest_window)
 
 # Backwards compatibility for existing import sites
 KioskAgent = LangGraphKioskAgent
