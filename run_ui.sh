@@ -12,7 +12,7 @@ trap cleanup EXIT
 
 # 1. Start the Python Backend
 echo "Starting Backend (FastAPI)..."
-python3 src/server.py &
+/opt/anaconda3/envs/gui/bin/python src/server.py &
 BACKEND_PID=$!
 
 # 2. Start the Next.js Frontend

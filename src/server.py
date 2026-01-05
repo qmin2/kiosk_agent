@@ -8,13 +8,17 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+    
+# Parent of project root for broader context if needed
+PARENT_ROOT = Path(__file__).resolve().parents[2]
+if str(PARENT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PARENT_ROOT))
 
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
 from copilotkit.sdk import CopilotKitSDK
 # from copilotkit.integrations.langgraph import LangGraphAgent
 from copilotkit import LangGraphAGUIAgent

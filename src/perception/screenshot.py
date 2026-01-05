@@ -11,7 +11,6 @@ from PIL import Image
 
 from kiosk_agent.src.config import ScreenshotConfig
 
-LOG_IMAGE_PATH = Path("/Users/qmin2/Desktop/kiosk_agent/screenshots")
 
 @dataclass
 class ScreenshotResult:
@@ -48,6 +47,7 @@ class AndroidScreenshotter:
         if save:
             timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%S%fZ")
             save_path = self.config.output_dir / f"kiosk_screen_{timestamp}.png"
+            
             image.save(save_path)
             # self._cleanup_old_files()
         return ScreenshotResult(image=image, path=save_path)

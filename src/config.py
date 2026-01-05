@@ -12,7 +12,7 @@ class ScreenshotConfig: ## 이게 굳이 있어야 하나?
 
     adb_path: str = "adb"
     device_id: Optional[str] = None
-    output_dir: Path = field(default_factory=lambda: Path("/Users/qmin2/Desktop/kiosk_agent/screenshots"))
+    output_dir: Path = field(default_factory=lambda: Path(__file__).resolve().parents[1] / "screenshots")
     keep_last_n: int = 10
 
 
@@ -44,7 +44,7 @@ class ADBConfig:
     device_id: Optional[str] = None
     default_swipe_duration_ms: int = 300
     steps: int = 1
-    screenshot_abs_path = "/Users/qmin2/Desktop/kiosk_agent/screenshots"
+    screenshot_abs_path: str = str(Path(__file__).resolve().parents[2] / "screenshots")
 
 
 @dataclass
